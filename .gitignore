@@ -1,0 +1,6 @@
+llm/
+.venv/
+.DS_Store
+.python-version
+
+**/*.pyc
