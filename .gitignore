@@ -2,5 +2,5 @@ llm/
 .venv/
 .DS_Store
 .python-version
-
+.cursor/
 **/*.pyc
