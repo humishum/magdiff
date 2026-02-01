@@ -4,3 +4,4 @@ llm/
 .python-version
 .cursor/
 **/*.pyc
+todo.txt
