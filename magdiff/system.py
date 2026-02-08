@@ -1,33 +1,33 @@
-import numpy as np  # Only for constants like mu0 if needed
 import jax
 import jax.numpy as jnp
 from magdiff.components.base import MagneticComponent
+from typing import List, Dict
+from magdiff.constants import MU_0
+
 
 class MagneticSystem:
-    """A system of multiple magnetic components (dipoles, etc.)."""
-    def __init__(self, components=None):
+    """ A system comprised of multiple components, allowing for the cumulative calculation of magnetic fields."""
+    def __init__(self, components: List[MagneticComponent] = None):
         """
         :param components: list of MagneticComponent objects
         """
-        self.components = components[:] if components is not None else []
+        self.components: List[MagneticComponent] = components[:] if components is not None else []
     
-    def add_component(self, component):
-        """Add a MagneticComponent (Dipole, Cuboid, etc.) to the system."""
+    def add_component(self, component: MagneticComponent):
+        """Add a MagneticComponent  the system."""
         self.components.append(component)
     
-    def field_at(self, point):
+    def field_at(self, point: jnp.ndarray) -> jnp.ndarray:
         """
         Compute the total magnetic field at the given point by summing contributions
         from all components in the system.
         """
         point = jnp.array(point, dtype=float)
-        # Sum up fields from each component
-        total_B = jnp.zeros(3, dtype=float)
-        for comp in self.components:
-            total_B = total_B + comp.field_at(point)
-        return total_B
+        # Compute all field contributions, then take the sum
+        fields = jnp.stack([comp.field_at(point) for comp in self.components])
+        return jnp.sum(fields, axis=0)
     
-    def get_parameters(self):
+    def get_parameters(self) -> Dict[str, jnp.ndarray]:
         """
         Extract all optimizable parameters from the system as a flat array.
         Returns a dict with parameter structure and the flat parameter array.
@@ -123,9 +123,6 @@ class MagneticSystem:
         """
         Functional computation of dipole field without mutating the dipole.
         """
-        import numpy as np
-        
-        MU0 = 4 * np.pi * 1e-7
         
         point = jnp.array(point, dtype=float)
         position = params['position']
@@ -145,7 +142,7 @@ class MagneticSystem:
         # Using the dipole field formula:
         term1 = 3 * m_dot_r * r_hat / (r_norm**3)
         term2 = moment / (r_norm**3)
-        B = MU0/(4*np.pi) * (term1 - term2)  # in Tesla
+        B = MU_0/(4*jnp.pi) * (term1 - term2)  # in Tesla
         return B
     
     def field_on_grid(self, x_range, y_range, z_range, grid_shape):

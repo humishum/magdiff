@@ -1,6 +1,7 @@
 import plotly.graph_objects as go
 import numpy as np 
 from magdiff.components.dipole import Dipole
+
 def visualize_field(system, region=((-1,1),(-1,1),(-1,1)), grid_count=(10,10,10)):
     """
     Create a 3D Plotly figure showing magnetic field lines (as streamtubes) and magnet positions.
