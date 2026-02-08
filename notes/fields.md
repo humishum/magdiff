@@ -1,7 +1,5 @@
 # Methods for Calculating Magnetic Fields
 
-At the core of it, what we are solving for are Maxwell's equations. 
-
 
 ## Dipole-Dipole Approximation 
 This is the simplest method of the bunch. What we do here is approximate each "magnet" in a system to be represented as a magnetic dipole moment, rather than a volume. In other words this is a single point in space, in which there is a radiating magnetic field, 
