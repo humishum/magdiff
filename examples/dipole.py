@@ -12,7 +12,8 @@ from magdiff.components.dipole import Dipole
 from magdiff.system import MagneticSystem
 from magdiff.utils import print_tree
 from magdiff.visualize import visualize_field
-
+import time
+time_start = time.monotonic_ns()
 # Target point where we want |B| maximal
 target = jnp.array([5.0, 5.0, 5.0])
 
@@ -57,22 +58,26 @@ r_hat = r / jnp.linalg.norm(r)
 print(f"Initial moment direction:    {system.components[0].moment / jnp.linalg.norm(system.components[0].moment)}")
 print(f"Ideal direction to target (r_hat): {r_hat}")
 
-
 # Use normalised gradient steps to decouple step size from field magnitude.
 lr = 1e6
-n_steps = 500
+n_steps = 5000
 current = system
 
-for i in range(1, n_steps + 1):
-    g = grad_fn(current)
-    current = jax.tree.map(lambda p, gp: p - lr * gp, current, g)
+@jax.jit # winner winner chicken dinner
+def step(system):
+    g = grad_fn(system)
+    return jax.tree.map(lambda p, gp: p - lr * gp, system, g)
 
+for i in range(1, n_steps + 1):
+    current = step(current)
     if i % 100 == 0 or i == 1:
         field_mag = jnp.linalg.norm(current.field_at(target))
         m_world = rotate_vector(current.components[0].rotation_vector, current.components[0].moment)
         m_dir = m_world / jnp.linalg.norm(m_world)
         print(f"Step {i:4d}: |B| = {field_mag:.4e} T  moment_dir={m_dir}  rotvec={current.components[0].rotation_vector}")
 
+print(f"Time taken: {(time.monotonic_ns() - time_start) * 1e-9:.2f} s")
+print(f"Est. Avg Time per step: {(time.monotonic_ns() - time_start) / n_steps * 1e-9:.2f} s")
 
 print("=== After optimisation ===")
 print_tree(current)
@@ -81,6 +86,5 @@ print(f"Moment in world frame: {m_world}")
 print(f"Field at target: {current.field_at(target)}")
 print(f"|B| at target:   {jnp.linalg.norm(current.field_at(target)):.4e} T")
 print(f"Error in moment direction: {jnp.linalg.norm(m_dir - r_hat)}")
-
 fig = visualize_field(current)
 fig.show()
