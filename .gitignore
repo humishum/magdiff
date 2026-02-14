@@ -1,7 +1,8 @@
-llm/
 .venv/
 .DS_Store
 .python-version
 .cursor/
 **/*.pyc
 todo.txt
+__pycache__/
+**/__pycache__/

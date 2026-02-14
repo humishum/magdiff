@@ -36,8 +36,8 @@ from magdiff.components.dipole import Dipole
 from magdiff.system import MagneticSystem
 from magdiff.visualize import visualize_field
 
-dip1 = Dipole(name="dipole_1 moment=jnp.array([50.0, 0.0, 0.0]), position=jnp.array([1.0, 0.0, 0.0]),rotation_vector=jnp.zeros(3))
-dip2 = Dipole(name="dipole_2 moment=jnp.array([-50.0, 0.0, 0.0]), position=jnp.array([1.0, 1.0, 0.0]),rotation_vector=jnp.zeros(3))
+dip1 = Dipole(name="dipole_1", moment=jnp.array([50.0, 0.0, 0.0]), position=jnp.array([1.0, 0.0, 0.0]),rotation_vector=jnp.zeros(3))
+dip2 = Dipole(name="dipole_2", moment=jnp.array([-50.0, 0.0, 0.0]), position=jnp.array([1.0, 1.0, 0.0]),rotation_vector=jnp.zeros(3))
 system = MagneticSystem([dip1, dip2], name="sample system")
 observer_position = [0.0, 0.0, 0.0]
 print(f"B Field at {observer_position} is {system.field_at(observer_position)}")
@@ -49,7 +49,7 @@ print(f"B Field at {observer_position} is {system.field_at(observer_position)}")
 
 ## Dependencies 
 ```
-python >=3.12
+python>=3.12
 jax>=0.4.20
 jaxlib>=0.4.20
 numpy>=1.24.0
