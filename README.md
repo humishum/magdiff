@@ -1,23 +1,23 @@
 # MagDiff 
-### A differentiable magnetics simulation library built in Python, powered by Jax
+### A differentiable magnetics simulation library, powered by Jax
 --- 
 
 The goal of this Python Package is to provide an interface for calculating magnetic fields for, well, magnets(and soon anything else that creates a magnetic field!).
-One of the main focuses of this library is that it is created with differentiability in mind, using a Jax native backend. 
+One of the main focuses of this library is that it is created with differentiability in mind, using a Jax native backend.
 
 With the current version(02/12/26),all calculations rely on the magnetic dipole approximation, except for the coil component, which makes use of the Biot-Savart Law. Additional closed form solutions for differeent volumes coming soon! 
-
-Future plans include(and are not limited to): 
-- implementation of common (closed-form) analytical solutions for magnetic volumes. 
-    - this should be scalable to support mesh volumes loaded from CAD
-- Time varying magnetic fields 
-- Implementation of a "Sensor" with the option to adjust gain and simulate ADC 
-- Integration with physics backends to support collisions, movement, force, etc. (this one is a bit of a stretch, but is nonetheless a long term goal of the project)
 
 Current high level todo list(as of 02/12/26): 
 - closed form solutions for cubes, spheres, cylinders 
 - Improve visualization and plotting functions
 - Cleanup repo documentation and examples
+
+Future plans include(and are not limited to): 
+- implementation of common (closed-form) analytical solutions for magnetic volumes. 
+    - this should be scalable to support mesh volumes loaded from CAD
+- Time varying magnetic fields 
+- Implementation of a "Sensor" readout, rather than just using a point in space for measurements 
+- Integration with physics backends to support collisions, movement, force, etc. (this one is a bit of a stretch, but is nonetheless a long term goal of the project)
 
 
 ## Installation 
@@ -25,7 +25,9 @@ The package isn't published to any indexes, so we'll rely on a local editable in
 ```
 git clone git@github.com:humishum/magdiff.git
 cd magdiff
-uv add . # or pip install -e .
+# take your pick of uv vs pip install
+uv add . 
+pip install -e .
 ```
 
 ## Usage 
@@ -42,6 +44,7 @@ system = MagneticSystem([dip1, dip2], name="sample system")
 observer_position = [0.0, 0.0, 0.0]
 print(f"B Field at {observer_position} is {system.field_at(observer_position)}")
 # B Field at [0.0, 0.0, 0.0] is [ 9.1161164e-06 -2.6516507e-06  0.0000000e+00]
+
 ```
 
 
