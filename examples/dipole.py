@@ -11,7 +11,7 @@ from magdiff.math import rotate_vector
 from magdiff.components.dipole import Dipole
 from magdiff.system import MagneticSystem
 from magdiff.utils import print_tree
-from magdiff.visualize import visualize_field
+from magdiff.visualization import PlaneFieldSpec
 import time
 time_start = time.monotonic_ns()
 # Target point where we want |B| maximal
@@ -86,5 +86,34 @@ print(f"Moment in world frame: {m_world}")
 print(f"Field at target: {current.field_at(target)}")
 print(f"|B| at target:   {jnp.linalg.norm(current.field_at(target)):.4e} T")
 print(f"Error in moment direction: {jnp.linalg.norm(m_dir - r_hat)}")
-fig = visualize_field(current)
-fig.show()
+
+# Visualize the optimized system with a local, magnitude-colored field slice.
+dipole_position = current.components[0].position
+viewer = current.visualize(
+    field=PlaneFieldSpec.xz(
+        y=float(dipole_position[1]),
+        xlim=(float(dipole_position[0]) - 1.0, float(dipole_position[0]) + 1.5),
+        zlim=(-1.5, 1.5),
+        resolution=(121, 121),
+        quantity="norm",
+        show_vectors=True,
+        exclusion_radius=0.05,
+        color_percentile=99.0,
+        vector_stride=12,
+        vector_scale=0.22,
+        vector_min_scale=0.05,
+        colorscale="Viridis",
+    ),
+    styles={
+        "Dipole": {
+            "sphere_radius": 0.18,
+            "arrow_length": 0.65,
+            "body_color": "#ffb703",
+            "label_color": "#1d3557",
+        }
+    },
+    metadata={
+        "title": "Optimized Dipole Field Slice",
+    },
+)
+viewer.show()

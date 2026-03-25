@@ -21,6 +21,10 @@ dev = [
     "jupyter>=1.0.0",
     "ipykernel>=6.0.0",
 ]
+viz = [
+    "ipywidgets>=8.1.0",
+    "k3d>=2.16.1",
+]
 
 [build-system]
 requires = ["hatchling"]

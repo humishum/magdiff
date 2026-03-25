@@ -44,3 +44,10 @@ class MagneticComponent(ABC):
         raise NotImplementedError(
             "Subclasses should implement field_at() for their geometry."
         )
+
+    def visualize(self, **kwargs):
+        """Visualize this component or system with the high-level viewer API."""
+        # lazy import since it's optional 
+        from magdiff.visualization import visualize_system
+
+        return visualize_system(self, **kwargs)

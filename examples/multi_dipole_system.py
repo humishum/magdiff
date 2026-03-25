@@ -3,7 +3,7 @@ Multi-dipole optimization example.
 In this example, we explore how we can build a system of multiple dipoles placed in some arbitrary configuration, 
 and then optimize their positions to maximize field strenght at a point in space. 
 
-The optimization in this is somewhat overkill, 
+The optimization in this is somewhat overkill, but alas shows usage and basic adam setup. 
 
 Demonstrates:
   - Freezing moments with stop_gradient (optimize positions only)
@@ -102,7 +102,7 @@ def loss_fn(system):
 
 
 # ---------------------------------------------------------------------------
-# 4.  Adam optimiser via jax.lax.scan (all in XLA, no Python-loop overhead)
+# 4.  Adam optimiser via jax.lax.scan 
 # ---------------------------------------------------------------------------
 n_steps = 2_000
 lr0 = 1e2
