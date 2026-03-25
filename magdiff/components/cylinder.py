@@ -1,51 +1,76 @@
-import numpy as np  # Only for constants like mu0 if needed
+import jax
 import jax.numpy as jnp
 from magdiff.components.base import MagneticComponent
-from magdiff.constants import MU0
+from magdiff.constants import MU_0
+
 
 class Cylinder(MagneticComponent):
-    """Uniformly magnetized solid cylinder (finite length).
-    """
+    """Uniformly magnetized solid cylinder (finite length)."""
 
-    def __init__(self, magnetization=jnp.array([0.0, 0.0, 0.0]), diameter=1.0,
-                 height=1.0, position=jnp.array([0.0, 0.0, 0.0])):
+    def __init__(
+        self,
+        magnetization=jnp.zeros(3),
+        diameter=1.0,
+        height=1.0,
+        position=jnp.zeros(3),
+        rotation_vector=jnp.zeros(3),
+        name=None,
+    ):
         """Create a cylinder magnet.
 
         Parameters
         ----------
         magnetization : array-like, shape (3,)
-            Homogeneous magnetization vector (A/m) in the **world** coordinate frame.
+            Homogeneous magnetization vector (A/m) in the body frame.
         diameter : float
             Cylinder diameter (m).
         height : float
             Cylinder height (m).
         position : array-like, shape (3,)
-            Position of the cylinder centre in metres.
+            Position of the cylinder centre relative to parent frame (m).
+        rotation_vector : array-like, shape (3,)
+            Axis-angle rotation vector relative to parent frame (rad).
+        name : str, optional
+            Human-readable label.
         """
-        super().__init__(position=position)
-        self.magnetization = jnp.array(magnetization, dtype=float)
+        super().__init__(position=position, rotation_vector=rotation_vector, name=name)
+        self.magnetization = jnp.asarray(magnetization, dtype=float)
         self.diameter = float(diameter)
         self.height = float(height)
 
-        # Pre-compute dipole moment for fallback
-        volume = np.pi * (self.diameter / 2) ** 2 * self.height
-        self._dipole_moment = self.magnetization * volume
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def field_at(self, point):
-        """Magnetic flux-density **B** at an arbitrary observation point."""
-        point = jnp.array(point, dtype=float)
+        """Magnetic flux-density B at an observation point (dipole approximation)."""
+        point = jnp.asarray(point, dtype=float)
+
+        # Dipole moment = magnetization * volume
+        volume = jnp.pi * (self.diameter / 2) ** 2 * self.height
+        m = self.magnetization * volume
+
         r = point - self.position
         r_norm = jnp.linalg.norm(r)
-        eps = 1e-12
-        r_norm = jnp.where(r_norm < eps, eps, r_norm)
         r_hat = r / r_norm
-        m = self._dipole_moment
-        m_dot_r = jnp.dot(m, r)
-        term1 = 3 * m_dot_r * r_hat / (r_norm**3)
-        term2 = m / (r_norm**3)
-        B = MU0 / (4 * np.pi) * (term1 - term2)
+
+        m_dot_rhat = jnp.dot(m, r_hat)
+        B = MU_0 / (4 * jnp.pi * r_norm**3) * (3 * m_dot_rhat * r_hat - m)
         return B
+
+    def tree_flatten(self):
+        children = (self.position, self.rotation_vector, self.magnetization)
+        aux_data = (self.name, self.diameter, self.height)
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        position, rotation_vector, magnetization = children
+        name, diameter, height = aux_data
+        return cls(
+            magnetization=magnetization,
+            diameter=diameter,
+            height=height,
+            position=position,
+            rotation_vector=rotation_vector,
+            name=name,
+        )
+
+
+jax.tree_util.register_pytree_node_class(Cylinder)

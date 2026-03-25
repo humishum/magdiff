@@ -1,240 +1,268 @@
-import jax, jax.numpy as jnp
+"""
+Multi-dipole optimization example. 
+In this example, we explore how we can build a system of multiple dipoles placed in some arbitrary configuration, 
+and then optimize their positions to maximize field strenght at a point in space. 
+
+The optimization in this is somewhat overkill, 
+
+Demonstrates:
+  - Freezing moments with stop_gradient (optimize positions only)
+  - Position bounds via projection (clipping)
+  - Minimum-distance soft barrier
+  - Adam optimizer with cosine LR schedule via jax.lax.scan
+"""
+
+import jax
+import jax.numpy as jnp
+from matplotlib import pyplot as plt
+
 from magdiff.components.dipole import Dipole
 from magdiff.system import MagneticSystem
-from magdiff.visualize import visualize_field
-from matplotlib import pyplot as plt
-# Target where we want |B| maximal
+from magdiff.utils import print_tree
+
+# ---------------------------------------------------------------------------
+# 1.  Build the system
+# ---------------------------------------------------------------------------
 target = jnp.array([-5.0, 0.0, 1.0])
 
-# Create a system with multiple dipoles
-dip1 = Dipole(moment=jnp.array([1.0, 0.0, 0.0]), position=jnp.array([1.0, 0.0, 0.0]), rotation_vector=jnp.zeros(3))
-dip2 = Dipole(moment=jnp.array([1.0, 1.0, 0.0]), position=jnp.array([0.0, 1.0, 0.0]), rotation_vector=jnp.zeros(3))
-dip3 = Dipole(moment=jnp.array([0.0, 0.0, 1.0]), position=jnp.array([0.0, 1.0, 1.0]), rotation_vector=jnp.zeros(3))
+system = MagneticSystem(
+    components=[
+        Dipole(name="dip_x",  moment=jnp.array([1.0, 0.0, 0.0]), position=jnp.array([1.0, 0.0, 0.0])),
+        Dipole(name="dip_xy", moment=jnp.array([1.0, 1.0, 0.0]), position=jnp.array([0.0, 1.0, 0.0])),
+        Dipole(name="dip_z",  moment=jnp.array([0.0, 0.0, 1.0]), position=jnp.array([0.0, 1.0, 1.0])),
+    ],
+    name="dipole_array",
+)
 
-system = MagneticSystem([dip1, dip2, dip3])
+print("=== Initial system ===")
+print_tree(system)
+print(f"\nTarget point: {target}")
+print(f"Initial |B| at target: {jnp.linalg.norm(system.field_at(target)):.4e} T\n")
 
-# Get initial system parameters
-param_dict = system.get_parameters()
-print("Initial system parameters structure:")
-for i, comp_info in enumerate(param_dict['structure']):
-    print(f"  Component {i}: {comp_info}")
-print("Initial flat parameters shape:", param_dict['flat_params'].shape)
-print("Initial flat parameters:", param_dict['flat_params'])
+# ---------------------------------------------------------------------------
+# 2.  Store the initial system so we can freeze moments
+# ---------------------------------------------------------------------------
+init_system = system  # reference for regularisation
 
-def neg_Bmag_system(flat_params):
+
+# ---------------------------------------------------------------------------
+# 3.  Loss function — takes the full system pytree
+# ---------------------------------------------------------------------------
+# Hyperparameters
+pos_bound = 10.0        # hard bound on positions
+min_dist = 0.5          # soft barrier: minimum distance to target
+reg_position = 1e-3     # L2 penalty on position drift
+reg_min_dist = 1e-9     # weight for distance barrier
+
+
+def loss_fn(system):
     """
-    Objective function that operates on the entire system.
-    Returns negative field magnitude at target point.
+    Scalar loss to MINIMISE.  Optimises positions only, while magnetic moments are frozen.
+
+    - Primary objective: maximise |B| at the target  (negated for minimisation)
+    - L2 regularisation
+    - distance barrier prevents positions from collapsing onto the target
     """
-    B_field = system.field_at_with_params(target, flat_params)
-    return -jnp.linalg.norm(B_field)
+    frozen_components = []
+    for comp in system.components:
+        frozen_components.append(
+            Dipole(
+                moment=jax.lax.stop_gradient(comp.moment),
+                position=comp.position,
+                rotation_vector=jax.lax.stop_gradient(comp.rotation_vector),
+                name=comp.name,
+            )
+        )
+    frozen_system = MagneticSystem(
+        components=frozen_components,
+        position=jax.lax.stop_gradient(system.position),
+        rotation_vector=jax.lax.stop_gradient(system.rotation_vector),
+        name=system.name,
+    )
 
-# ----------------------------
-# Optimization helpers
-# ----------------------------
-def _split_dipole_params(flat_params):
-    """Assumes flat_params packs [pos(3), moment(3)] per dipole."""
-    x = flat_params.reshape((-1, 6))
-    positions = x[:, :3]
-    moments = x[:, 3:]
-    return positions, moments
+    # Field magnitude at target
+    B = frozen_system.field_at(target)
+    field_mag = jnp.linalg.norm(B)
 
+    # Collect positions for regularisation
+    positions = jnp.stack([c.position for c in system.components])
+    init_positions = jnp.stack([c.position for c in init_system.components])
 
-def _replace_positions(flat_params_template, new_positions_flat):
-    """Return a full flat_params vector with positions replaced and moments unchanged."""
-    n = flat_params_template.shape[0] // 6
-    x = flat_params_template.reshape((n, 6))
-    new_pos = new_positions_flat.reshape((n, 3))
-    x = x.at[:, :3].set(new_pos)
-    return x.reshape((-1,))
-
-
-def loss_fn(pos_params):
-    """
-    Scalar loss to MINIMIZE.
-
-    We optimize POSITIONS ONLY (moments are held fixed at their initial values).
-    Maximizing ||B|| at a point is still effectively unbounded if positions can move arbitrarily
-    close to the target (until the r_norm epsilon hits), so we keep it well-behaved with
-    boundary conditions + a soft min-distance barrier.
-    """
-    full_flat = _replace_positions(flat_params_template, pos_params)
-    B_field = system.field_at_with_params(target, full_flat)
-    field_mag = jnp.linalg.norm(B_field)
-
-    positions = pos_params.reshape((-1, 3))
-
-    # L2 regularization keeps positions from drifting too far from the initial config
+    # L2 drift penalty
     pos_delta = positions - init_positions
-    pos_l2 = jnp.mean(jnp.sum(pos_delta**2, axis=-1))
+    pos_l2 = jnp.mean(jnp.sum(pos_delta ** 2, axis=-1))
 
-    # Soft barrier discourages diving into the near-singularity at the target
+    # min-distance barrier (keeps dipoles from moving to exacty the target point)
     dists = jnp.linalg.norm(positions - target[None, :], axis=-1)
     dist_barrier = jnp.mean(jax.nn.softplus(min_dist - dists) ** 2)
 
-    # MINIMIZE: negative of what we want + penalties
-    loss = (
-        -field_mag
-        + reg_position * pos_l2
-        + reg_min_dist * dist_barrier
-    )
+    loss = -field_mag + reg_position * pos_l2 + reg_min_dist * dist_barrier
     aux = (field_mag, pos_l2, dist_barrier)
     return loss, aux
 
 
-value_and_grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-
-# Extract initial parameters
-initial_params = param_dict['flat_params']
-print(f"\nInitial field at target: {system.field_at(target)}")
-print(f"Initial field magnitude: {jnp.linalg.norm(system.field_at(target)):.4e} T")
-
-# Optimization loop
-params = initial_params
-# Template full parameter vector; we will only change positions
-flat_params_template = initial_params
-init_positions, init_moments = _split_dipole_params(flat_params_template)
-init_positions = init_positions  # shape (n_dipoles, 3)
-pos_params0 = init_positions.reshape((-1,))
-
-# Optimizer + schedule knobs (tune these)
-n_steps = int(2_000)
+# ---------------------------------------------------------------------------
+# 4.  Adam optimiser via jax.lax.scan (all in XLA, no Python-loop overhead)
+# ---------------------------------------------------------------------------
+n_steps = 2_000
 lr0 = 1e2
 lr_min = 1.0
 beta1 = 0.9
 beta2 = 0.999
 adam_eps = 1e-8
-grad_clip = 1e-4  # clip global grad norm (raise if updates are too timid)
-
-# Hard bounds (projection) to prevent pathological solutions:
-# - flying far away (field -> ~0)
-# - diving into the near-singularity (field spikes)
-pos_bound = 10.0  # positions clipped to [-pos_bound, +pos_bound] per coordinate
-
-# Regularization knobs
-reg_position = 1e-3  # penalize deviation from initial positions
-min_dist = 0.5
-reg_min_dist = 1e-9
+grad_clip = 1e-4
 
 
 def lr_schedule(i):
-    # Cosine decay from lr0 -> lr_min over n_steps
-    t = i / jnp.maximum(1, (n_steps - 1))
+    """Cosine decay from lr0 → lr_min over n_steps."""
+    t = i / jnp.maximum(1, n_steps - 1)
     return lr_min + 0.5 * (lr0 - lr_min) * (1.0 + jnp.cos(jnp.pi * t))
 
 
+value_and_grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+
+
 @jax.jit
-def _adam_scan(init_pos_params):
-    def _project(pos_params):
-        positions = pos_params.reshape((-1, 3))
-        positions = jnp.clip(positions, -pos_bound, pos_bound)
-        return positions.reshape((-1,))
+def run_optimisation(system):
+    # Extract only the position leaves we want to optimise
+    # We'll work directly with a flat positions array for the scan body
+    init_pos = jnp.stack([c.position for c in system.components])  # (N, 3)
+    pos_flat = init_pos.reshape(-1)
+
+    def _rebuild_system(pos_flat):
+        """Rebuild the system pytree with updated positions."""
+        positions = pos_flat.reshape((-1, 3))
+        new_components = []
+        for i, comp in enumerate(system.components):
+            new_components.append(
+                Dipole(
+                    moment=comp.moment,
+                    position=positions[i],
+                    rotation_vector=comp.rotation_vector,
+                    name=comp.name,
+                )
+            )
+        return MagneticSystem(
+            components=new_components,
+            position=system.position,
+            rotation_vector=system.rotation_vector,
+            name=system.name,
+        )
+
+    def _loss_of_positions(pos_flat):
+        """Wrap loss_fn so it's a function of the flat position vector only."""
+        sys = _rebuild_system(pos_flat)
+        return loss_fn(sys)
+
+    pos_value_and_grad = jax.value_and_grad(_loss_of_positions, has_aux=True)
+
+    def _project(pos_flat):
+        """Clip positions to [-pos_bound, pos_bound]."""
+        return jnp.clip(pos_flat, -pos_bound, pos_bound)
 
     def _body(carry, i):
-        pos_params, m, v, best_pos_params, best_field = carry
+        pos, m, v, best_pos, best_field = carry
 
-        (loss, (field_mag, pos_l2, dist_barrier)), g = value_and_grad_fn(pos_params)
+        (loss, (field_mag, pos_l2, dist_barrier)), g = pos_value_and_grad(pos)
 
-        # Track best params by true objective (field_mag) at the *current* params.
-        # Important: field_mag is computed BEFORE we update params.
-        # Previously we compared pre-update field_mag but stored the post-update params,
-        # which can make the saved "best" params unrelated (and often much worse).
-        best_better = field_mag > best_field
-        best_field = jnp.where(best_better, field_mag, best_field)
-        best_pos_params = jnp.where(best_better, pos_params, best_pos_params)
+        # Track best
+        better = field_mag > best_field
+        best_field = jnp.where(better, field_mag, best_field)
+        best_pos = jnp.where(better, pos, best_pos)
 
-        # Clip gradient to avoid rare blow-ups near the r_norm epsilon
+        # Clip gradient norm
         g_norm = jnp.linalg.norm(g)
-        scale = jnp.minimum(1.0, grad_clip / (g_norm + 1e-12))
-        g = g * scale
+        g = g * jnp.minimum(1.0, grad_clip / (g_norm + 1e-12))
 
         # Adam update
-        m = beta1 * m + (1.0 - beta1) * g
-        v = beta2 * v + (1.0 - beta2) * (g * g)
-        mhat = m / (1.0 - beta1 ** (i + 1))
-        vhat = v / (1.0 - beta2 ** (i + 1))
-
+        m = beta1 * m + (1 - beta1) * g
+        v = beta2 * v + (1 - beta2) * g ** 2
+        mhat = m / (1 - beta1 ** (i + 1))
+        vhat = v / (1 - beta2 ** (i + 1))
         lr = lr_schedule(i)
         step = lr * mhat / (jnp.sqrt(vhat) + adam_eps)
-        pos_params = pos_params - step  # gradient descent on loss
-        pos_params = _project(pos_params)
+
+        pos = _project(pos - step)
 
         metrics = (loss, field_mag, g_norm, jnp.linalg.norm(step), pos_l2, dist_barrier, lr)
-        return (pos_params, m, v, best_pos_params, best_field), metrics
+        return (pos, m, v, best_pos, best_field), metrics
 
-    init_m = jnp.zeros_like(init_pos_params)
-    init_v = jnp.zeros_like(init_pos_params)
-    init_best_field = -jnp.inf
-    init_best_pos_params = init_pos_params
-    init_carry = (init_pos_params, init_m, init_v, init_best_pos_params, init_best_field)
+    init_carry = (
+        pos_flat,
+        jnp.zeros_like(pos_flat),       # m
+        jnp.zeros_like(pos_flat),       # v
+        pos_flat,                        # best_pos
+        -jnp.inf,                        # best_field
+    )
 
-    (final_pos_params, _m, _v, best_pos_params, best_field), metrics = jax.lax.scan(
+    (final_pos, _, _, best_pos, best_field), metrics = jax.lax.scan(
         _body, init_carry, jnp.arange(n_steps)
     )
-    return final_pos_params, best_pos_params, best_field, metrics
+    return best_pos, best_field, metrics
 
 
-pos_params, best_pos_params, best_field_mag, metrics = _adam_scan(pos_params0)
+# ---------------------------------------------------------------------------
+# 5.  Run
+# ---------------------------------------------------------------------------
+best_pos, best_field_mag, metrics = run_optimisation(system)
 losses, field_mags, grad_norms, step_norms, pos_l2s, dist_barriers, lrs = metrics
 
-# Host-side logging / plotting
-losses_np = jax.device_get(losses)
+# Rebuild the optimised system
+best_positions = best_pos.reshape((-1, 3))
+optimised_components = []
+for i, comp in enumerate(system.components):
+    optimised_components.append(
+        Dipole(
+            moment=comp.moment,
+            position=best_positions[i],
+            rotation_vector=comp.rotation_vector,
+            name=comp.name,
+        )
+    )
+optimised_system = MagneticSystem(components=optimised_components, name="dipole_array (optimised)")
+
+# ---------------------------------------------------------------------------
+# 6.  Report
+# ---------------------------------------------------------------------------
+print("=== Optimised system ===")
+print_tree(optimised_system)
+
+initial_field_mag = jnp.linalg.norm(system.field_at(target))
+final_field_mag = jnp.linalg.norm(optimised_system.field_at(target))
+
+print(f"\nInitial |B| at target: {initial_field_mag:.4e} T")
+print(f"Best |B| at target:   {float(best_field_mag):.4e} T")
+print(f"Final |B| at target:  {final_field_mag:.4e} T")
+print(f"Improvement factor:   {final_field_mag / initial_field_mag:.2f}x")
+
+# ---------------------------------------------------------------------------
+# 7.  Plot
+# ---------------------------------------------------------------------------
 field_mags_np = jax.device_get(field_mags)
-grad_norms_np = jax.device_get(grad_norms)
-step_norms_np = jax.device_get(step_norms)
-lrs_np = jax.device_get(lrs)
+losses_np = jax.device_get(losses)
 pos_l2s_np = jax.device_get(pos_l2s)
 dist_barriers_np = jax.device_get(dist_barriers)
-best_field_mag_np = float(jax.device_get(best_field_mag))
-best_pos_params_np = jax.device_get(best_pos_params)
+lrs_np = jax.device_get(lrs)
 
-print_every = int(1e2)
-for i in range(0, n_steps, print_every):
-    print(
-        f"Iteration {i+1}: |B|={field_mags_np[i]:.4e} T | "
-        f"loss={losses_np[i]:.4e} | lr={lrs_np[i]:.2e} | "
-        f"||grad||={grad_norms_np[i]:.2e} | ||step||={step_norms_np[i]:.2e}"
-    )
-print(f"Best |B| seen during run: {best_field_mag_np:.4e} T")
-# Update the system with optimized parameters
-final_param_dict = param_dict.copy()
-final_param_dict['flat_params'] = _replace_positions(flat_params_template, best_pos_params_np)
-print(initial_params)
-print("---")
-print(final_param_dict["flat_params"])
-system.set_parameters(final_param_dict)
+best_so_far = jnp.maximum.accumulate(field_mags)
+best_so_far_np = jax.device_get(best_so_far.astype(field_mags.dtype))
 
-# Verify the system has been updated
-print("\nFinal system state:")
-for i, comp in enumerate(system.components):
-    print(f"Dipole {i+1}: position={comp.position}, moment={comp.moment}")
-
-print(f"\nFinal field at target: {system.field_at(target)}")
-print(f"Final field magnitude: {jnp.linalg.norm(system.field_at(target)):.4e} T")
-
-# Show improvement
-initial_field_mag = jnp.linalg.norm(system.field_at_with_params(target, initial_params))
-final_field_mag = jnp.linalg.norm(system.field_at(target))
-print(f"Improvement factor: {final_field_mag / initial_field_mag:.2f}x")
-
-best_so_far_np = jnp.maximum.accumulate(field_mags).astype(field_mags.dtype)
-best_so_far_np = jax.device_get(best_so_far_np)
+# print(jax.make_jaxpr(run_optimisation.__wrapped__)(system))
 
 fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(14, 4))
 
-# Left: objective over time
 ax0.plot(field_mags_np, label="|B|(iter)")
 ax0.plot(best_so_far_np, label="best so far")
 ax0.set_title("Target field magnitude")
 ax0.set_xlabel("step")
 ax0.set_ylabel("|B| [T]")
 ax0.legend()
+ax0.grid(True)
 
-# Right: loss/regularizers + LR
 ax1.plot(losses_np, label="loss")
-ax1.plot(pos_l2s_np, label="pos_l2 (Δpos²)")
+ax1.plot(pos_l2s_np, label="pos L2 drift")
 ax1.plot(dist_barriers_np, label="min-dist barrier")
-ax1.set_title("Optimization metrics")
+ax1.set_title("Optimisation metrics")
 ax1.set_xlabel("step")
 ax1.set_ylabel("value")
 ax1.set_yscale("symlog", linthresh=1e-12)
@@ -243,15 +271,10 @@ ax1b = ax1.twinx()
 ax1b.plot(lrs_np, color="k", alpha=0.35, linewidth=1.0, label="lr")
 ax1b.set_ylabel("learning rate")
 
-# Combine legends from both right axes
 handles1, labels1 = ax1.get_legend_handles_labels()
 handles2, labels2 = ax1b.get_legend_handles_labels()
 ax1.legend(handles1 + handles2, labels1 + labels2, loc="upper right")
-
-ax0.grid(True)
 ax1.grid(True)
+
 plt.tight_layout()
 plt.show()
-# Visualize the optimized system
-fig = visualize_field(system)
-fig.show() 
